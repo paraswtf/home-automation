@@ -21,6 +21,8 @@ export const appConfig = {
 	maxRelaysPerDevice: 8,
 	/** WebSocket reconnect interval in milliseconds */
 	wsReconnectInterval: 5000,
+	/** Milliseconds after last heartbeat before a device is considered offline (2.5× heartbeat) */
+	deviceOnlineThresholdMs: 150_000,
 	/** API base URL for ESP32 → server communication */
 	apiBaseUrl: process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:3000"
 };

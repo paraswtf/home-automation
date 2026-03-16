@@ -39,7 +39,7 @@ const { auth } = NextAuth({
 
 export default auth((req) => {
 	const isLoginPage = req.nextUrl.pathname === "/admin/login";
-	const role = req.auth?.user?.role ?? "";
+	const role = (req.auth?.user as { role?: string } | undefined)?.role ?? "";
 	const isAuthenticated = !!req.auth && ALLOWED_ROLES.includes(role);
 
 	if (isLoginPage) return NextResponse.next();

@@ -79,7 +79,6 @@ model Device {
     macAddress      String    @unique
     firmwareVersion String?
     ssid            String?
-    online          Boolean   @default(false)
     lastSeenAt      DateTime?
     notes           String?
     apiKeyId        String    @db.ObjectId

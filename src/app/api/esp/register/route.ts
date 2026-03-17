@@ -39,12 +39,12 @@ export async function POST(req: NextRequest) {
 			return NextResponse.json({ error: "Invalid or revoked API key" }, { status: 401 });
 		}
 
-		// Upsert device
+		// Upsert device — name is only set on first creation.
+		// Dashboard edits take precedence and are never overwritten by the device.
 		const device = await db.device.upsert({
 			where: { macAddress },
 			update: {
 				lastSeenAt: new Date(),
-				...(name && { name }),
 				...(ssid && { ssid }),
 				...(firmwareVersion && { firmwareVersion }),
 				apiKeyId: key.id

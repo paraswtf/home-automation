@@ -61,6 +61,8 @@ export default function DeviceDetailPage() {
 	}, [onDeviceUpdate, id]); // eslint-disable-line react-hooks/exhaustive-deps
 
 	type DeviceGetOutput = RouterOutputs["device"]["get"];
+	type DetectorItem = RouterOutputs["detector"]["list"][number];
+	type AllRelayItem = RouterOutputs["detector"]["listAllRelays"][number];
 
 	useEffect(() => {
 		return onRelayUpdate((update) => {
@@ -178,6 +180,30 @@ export default function DeviceDetailPage() {
 			setDeleteRelayId(null);
 		}
 	});
+
+	// ── Detector state & mutations ────────────────────────────
+	const { data: detectorList = [] } = api.detector.list.useQuery({ deviceId: id });
+	const { data: allRelays = [] } = api.detector.listAllRelays.useQuery();
+	const [addingDetector, setAddingDetector] = useState(false);
+	const [newDetector, setNewDetector] = useState({ pin: 36, label: "Switch", mode: "toggle" as "toggle" | "follow", pullMode: "pullup" as "pullup" | "pulldown", linkedRelayId: "" });
+	const [editingDetectorId, setEditingDetectorId] = useState<string | null>(null);
+	const [editDetector, setEditDetector] = useState({ pin: 36, label: "Switch", mode: "toggle" as "toggle" | "follow", pullMode: "pullup" as "pullup" | "pulldown", linkedRelayId: "" });
+
+	const addDetector = api.detector.add.useMutation({
+		onSuccess: () => {
+			void utils.device.get.invalidate({ id });
+			void utils.detector.list.invalidate({ deviceId: id });
+			setAddingDetector(false);
+			setNewDetector({ pin: 36, label: "Switch", mode: "toggle", pullMode: "pullup", linkedRelayId: "" });
+		}
+	});
+	const updateDetector = api.detector.update.useMutation({
+		onSuccess: () => {
+			void utils.detector.list.invalidate({ deviceId: id });
+			setEditingDetectorId(null);
+		}
+	});
+	const deleteDetector = api.detector.delete.useMutation({ onSuccess: () => void utils.detector.list.invalidate({ deviceId: id }) });
 
 	// Delete confirm
 	const [deleteDeviceOpen, setDeleteDeviceOpen] = useState(false);
@@ -323,12 +349,13 @@ export default function DeviceDetailPage() {
 				))}
 			</div>
 
-			{/* Tabs: Relays + Config */}
+			{/* Tabs: Relays + Detectors + Config */}
 			<Tabs defaultValue="relays">
 				<TabsList>
 					<TabsTrigger value="relays">
 						Relays ({device.relays.length}/{appConfig.maxRelaysPerDevice})
 					</TabsTrigger>
+					<TabsTrigger value="detectors">Detectors ({detectorList.length})</TabsTrigger>
 					<TabsTrigger value="config">Device Config</TabsTrigger>
 				</TabsList>
 
@@ -554,6 +581,256 @@ export default function DeviceDetailPage() {
 							<WifiOff className="w-3.5 h-3.5" />
 							Device is offline — relay toggles will sync when it reconnects.
 						</p>
+					)}
+				</TabsContent>
+
+				{/* DETECTORS TAB */}
+				<TabsContent
+					value="detectors"
+					className="mt-4 space-y-3"
+				>
+					<p className="text-xs text-muted-foreground">
+						Detectors monitor input GPIO pins and control a relay when the pin state changes.
+						<br />
+						<span className="text-primary font-medium">Toggle</span> — any change flips the relay. &nbsp;
+						<span className="text-primary font-medium">Follow</span> — relay mirrors pin state.
+						<br />
+						Pins 34–39 are input-only and ideal for detectors.
+					</p>
+
+					{detectorList.map((det: DetectorItem) => (
+						<div
+							key={det.id}
+							className="relay-card p-4"
+						>
+							{editingDetectorId === det.id ? (
+								<div className="space-y-2.5">
+									<Input
+										value={editDetector.label}
+										onChange={(e) => setEditDetector((d) => ({ ...d, label: e.target.value }))}
+										placeholder="Label"
+										className="h-8 text-sm"
+									/>
+									<div className="flex gap-2">
+										<div className="flex-1">
+											<Label className="text-[10px]">GPIO Pin</Label>
+											<Input
+												type="number"
+												value={editDetector.pin}
+												onChange={(e) => setEditDetector((d) => ({ ...d, pin: Number(e.target.value) }))}
+												className="h-8 text-sm mt-0.5"
+												min={0}
+												max={39}
+											/>
+										</div>
+										<div className="flex-1">
+											<Label className="text-[10px]">Mode</Label>
+											<select
+												value={editDetector.mode}
+												onChange={(e) => setEditDetector((d) => ({ ...d, mode: e.target.value as "toggle" | "follow" }))}
+												className="h-8 w-full mt-0.5 text-sm rounded-md border border-input bg-background px-2"
+											>
+												<option value="toggle">Toggle</option>
+												<option value="follow">Follow</option>
+											</select>
+										</div>
+									</div>
+									<div className="flex gap-2">
+										{editDetector.mode === "follow" && (
+											<div className="flex-1">
+												<Label className="text-[10px]">Pull Mode</Label>
+												<select
+													value={editDetector.pullMode}
+													onChange={(e) => setEditDetector((d) => ({ ...d, pullMode: e.target.value as "pullup" | "pulldown" }))}
+													className="h-8 w-full mt-0.5 text-sm rounded-md border border-input bg-background px-2"
+												>
+													<option value="pullup">Pull-up (active LOW)</option>
+													<option value="pulldown">Pull-down (active HIGH)</option>
+												</select>
+											</div>
+										)}
+										<div className="flex-1">
+											<Label className="text-[10px]">Linked Relay</Label>
+											<select
+												value={editDetector.linkedRelayId}
+												onChange={(e) => setEditDetector((d) => ({ ...d, linkedRelayId: e.target.value }))}
+												className="h-8 w-full mt-0.5 text-sm rounded-md border border-input bg-background px-2"
+											>
+												<option value="">— select —</option>
+												{allRelays.map((r: AllRelayItem) => (
+													<option
+														key={r.id}
+														value={r.id}
+													>
+														{r.deviceName} — {r.label} (GPIO {r.pin})
+													</option>
+												))}
+											</select>
+										</div>
+									</div>
+									<div className="flex gap-1.5">
+										<Button
+											size="sm"
+											className="flex-1 h-7 text-xs"
+											onClick={() => updateDetector.mutate({ detectorId: det.id, ...editDetector })}
+											disabled={updateDetector.isPending || !editDetector.label || !editDetector.linkedRelayId}
+										>
+											{updateDetector.isPending ? (
+												<Loader2 className="w-3 h-3 animate-spin" />
+											) : (
+												<>
+													<Save className="w-3 h-3" /> Save
+												</>
+											)}
+										</Button>
+										<Button
+											size="sm"
+											variant="ghost"
+											className="h-7 text-xs"
+											onClick={() => setEditingDetectorId(null)}
+										>
+											Cancel
+										</Button>
+										<Button
+											size="sm"
+											variant="ghost"
+											className="h-7 text-xs text-destructive hover:text-destructive"
+											onClick={() => deleteDetector.mutate({ detectorId: det.id })}
+										>
+											<Trash2 className="w-3 h-3" />
+										</Button>
+									</div>
+								</div>
+							) : (
+								<div className="flex items-center justify-between">
+									<div>
+										<p className="font-semibold text-sm">{det.label}</p>
+										<p className="text-xs text-muted-foreground mono mt-0.5">
+											GPIO {det.pin} · {det.mode}
+											{det.mode === "follow" ? ` · ${det.pullMode}` : ""} · →{" "}
+											{(() => {
+												const r = allRelays.find((x: AllRelayItem) => x.id === det.linkedRelayId);
+												return r ? `${r.deviceName} — ${r.label}` : "unknown";
+											})()}
+										</p>
+									</div>
+									<button
+										onClick={() => {
+											setEditingDetectorId(det.id);
+											setEditDetector({ pin: det.pin, label: det.label, mode: det.mode as "toggle" | "follow", pullMode: det.pullMode as "pullup" | "pulldown", linkedRelayId: det.linkedRelayId });
+										}}
+										className="text-muted-foreground hover:text-foreground"
+									>
+										<Pencil className="w-3.5 h-3.5" />
+									</button>
+								</div>
+							)}
+						</div>
+					))}
+
+					{/* Add detector */}
+					{addingDetector ? (
+						<div className="relay-card p-4 space-y-2.5">
+							<Input
+								value={newDetector.label}
+								onChange={(e) => setNewDetector((d) => ({ ...d, label: e.target.value }))}
+								placeholder="Detector label"
+								className="h-8 text-sm"
+								autoFocus
+							/>
+							<div className="flex gap-2">
+								<div className="flex-1">
+									<Label className="text-[10px]">GPIO Pin</Label>
+									<Input
+										type="number"
+										value={newDetector.pin}
+										onChange={(e) => setNewDetector((d) => ({ ...d, pin: Number(e.target.value) }))}
+										className="h-8 text-sm mt-0.5"
+										min={0}
+										max={39}
+									/>
+								</div>
+								<div className="flex-1">
+									<Label className="text-[10px]">Mode</Label>
+									<select
+										value={newDetector.mode}
+										onChange={(e) => setNewDetector((d) => ({ ...d, mode: e.target.value as "toggle" | "follow" }))}
+										className="h-8 w-full mt-0.5 text-sm rounded-md border border-input bg-background px-2"
+									>
+										<option value="toggle">Toggle</option>
+										<option value="follow">Follow</option>
+									</select>
+								</div>
+							</div>
+							<div className="flex gap-2">
+								{newDetector.mode === "follow" && (
+									<div className="flex-1">
+										<Label className="text-[10px]">Pull Mode</Label>
+										<select
+											value={newDetector.pullMode}
+											onChange={(e) => setNewDetector((d) => ({ ...d, pullMode: e.target.value as "pullup" | "pulldown" }))}
+											className="h-8 w-full mt-0.5 text-sm rounded-md border border-input bg-background px-2"
+										>
+											<option value="pullup">Pull-up (active LOW)</option>
+											<option value="pulldown">Pull-down (active HIGH)</option>
+										</select>
+									</div>
+								)}
+								<div className="flex-1">
+									<Label className="text-[10px]">Linked Relay</Label>
+									<select
+										value={newDetector.linkedRelayId}
+										onChange={(e) => setNewDetector((d) => ({ ...d, linkedRelayId: e.target.value }))}
+										className="h-8 w-full mt-0.5 text-sm rounded-md border border-input bg-background px-2"
+									>
+										<option value="">— select —</option>
+										{allRelays.map((r: AllRelayItem) => (
+											<option
+												key={r.id}
+												value={r.id}
+											>
+												{r.deviceName} — {r.label} (GPIO {r.pin})
+											</option>
+										))}
+									</select>
+								</div>
+							</div>
+							<div className="flex gap-1.5">
+								<Button
+									size="sm"
+									className="flex-1 h-7 text-xs"
+									onClick={() => addDetector.mutate({ deviceId: device.id, ...newDetector })}
+									disabled={addDetector.isPending || !newDetector.label || !newDetector.linkedRelayId}
+								>
+									{addDetector.isPending ? (
+										<Loader2 className="w-3 h-3 animate-spin" />
+									) : (
+										<>
+											<Plus className="w-3 h-3" /> Add Detector
+										</>
+									)}
+								</Button>
+								<Button
+									size="sm"
+									variant="ghost"
+									className="h-7 text-xs"
+									onClick={() => setAddingDetector(false)}
+								>
+									Cancel
+								</Button>
+							</div>
+						</div>
+					) : (
+						<Button
+							variant="outline"
+							size="sm"
+							className="w-full"
+							onClick={() => setAddingDetector(true)}
+							disabled={allRelays.length === 0}
+						>
+							<Plus className="w-3.5 h-3.5" /> Add Detector
+							{device.relays.length === 0 && <span className="ml-2 text-muted-foreground">(add a relay to any device first)</span>}
+						</Button>
 					)}
 				</TabsContent>
 

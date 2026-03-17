@@ -96,7 +96,13 @@ interface RelayAckMsg {
 	relayId: string;
 	state: boolean;
 }
-type EspMessage = AuthMsg | HeartbeatMsg | RelayAckMsg;
+interface DetectorTriggerMsg {
+	type: "detector_trigger";
+	linkedRelayId: string;
+	desiredState: boolean;
+	isToggle: boolean;
+}
+type EspMessage = AuthMsg | HeartbeatMsg | RelayAckMsg | DetectorTriggerMsg;
 
 interface BrowserSubscribeMsg {
 	type: "subscribe";
@@ -207,8 +213,49 @@ const httpServer = createServer((req, res) => {
 		});
 		return;
 	}
+	// ── Detector push endpoints ───────────────────────────────
+	for (const url of ["/push-detector-add", "/push-detector-update", "/push-detector-delete"]) {
+		if (req.method === "POST" && req.url === url) {
+			const secret = req.headers["x-internal-secret"] ?? "";
+			if (WS_SECRET && secret !== WS_SECRET) {
+				res.writeHead(403).end();
+				return;
+			}
+			let body = "";
+			req.on("data", (chunk: Buffer) => {
+				body += chunk.toString();
+			});
+			req.on("end", () => {
+				try {
+					const data = JSON.parse(body) as { deviceId: string; [k: string]: unknown };
+					const typeMap: Record<string, string> = {
+						"/push-detector-add": "detector_add",
+						"/push-detector-update": "detector_update_config",
+						"/push-detector-delete": "detector_delete"
+					};
+					const pushed = pushToDevice(data.deviceId, { type: typeMap[url], ...data });
+					res.writeHead(200, { "Content-Type": "application/json" });
+					res.end(JSON.stringify({ ok: true, pushed }));
+					console.log(`[HTTP] ${url} → deviceId=${data.deviceId} pushed=${pushed}`);
+				} catch {
+					res.writeHead(400).end();
+				}
+			});
+			return;
+		}
+	}
+
 	res.writeHead(404).end();
 });
+
+// ─── Helper to push a message to a device ────────────────────
+
+function pushToDevice(deviceId: string, payload: object): boolean {
+	const ws = deviceSockets.get(deviceId);
+	if (!ws || ws.readyState !== WebSocket.OPEN) return false;
+	ws.send(JSON.stringify(payload));
+	return true;
+}
 
 const wss = new WebSocketServer({ server: httpServer });
 
@@ -300,7 +347,10 @@ function handleDeviceConnection(ws: WebSocket) {
 				where: { macAddress },
 				update: { lastSeenAt: now, apiKeyId: key.id },
 				create: { macAddress, name: `ESP32 ${macAddress.slice(-5)}`, lastSeenAt: now, apiKeyId: key.id },
-				include: { relays: { orderBy: { order: "asc" } } }
+				include: {
+					relays: { orderBy: { order: "asc" } },
+					detectors: { orderBy: { createdAt: "asc" } }
+				}
 			});
 
 			authenticatedDeviceId = device.id;
@@ -313,7 +363,8 @@ function handleDeviceConnection(ws: WebSocket) {
 				JSON.stringify({
 					type: "auth_ok",
 					deviceId: device.id,
-					relays: device.relays.map((r) => ({ id: r.id, pin: r.pin, label: r.label, state: r.state, icon: r.icon }))
+					relays: device.relays.map((r) => ({ id: r.id, pin: r.pin, label: r.label, state: r.state, icon: r.icon })),
+					detectors: device.detectors.map((d) => ({ id: d.id, pin: d.pin, label: d.label, mode: d.mode, pullMode: d.pullMode, linkedRelayId: d.linkedRelayId }))
 				})
 			);
 
@@ -364,7 +415,52 @@ function handleDeviceConnection(ws: WebSocket) {
 			return;
 		}
 
-		// ── RELAY ACK ──────────────────────────────────────────
+		// ── DETECTOR TRIGGER ───────────────────────────────────
+		if (msg.type === "detector_trigger" && authenticatedDeviceId) {
+			const { linkedRelayId, desiredState, isToggle } = msg;
+
+			// Find the relay — may be on a different device
+			const relay = await db.relay.findFirst({
+				where: { id: linkedRelayId },
+				include: { device: { include: { apiKey: true } } }
+			});
+
+			if (!relay) {
+				console.log(`[WS] detector_trigger: relay ${linkedRelayId} not found`);
+				return;
+			}
+
+			// Security: relay must belong to same user as the triggering device
+			const triggeringDevice = await db.device.findUnique({
+				where: { id: authenticatedDeviceId },
+				include: { apiKey: true }
+			});
+			if (relay.device.apiKey.userId !== triggeringDevice?.apiKey.userId) {
+				console.log(`[WS] detector_trigger: cross-user relay access denied`);
+				return;
+			}
+
+			const newState = isToggle ? !relay.state : desiredState;
+
+			// Write DB
+			await db.relay.update({
+				where: { id: linkedRelayId },
+				data: { state: newState, updatedAt: new Date() }
+			});
+
+			// Push relay_cmd to the relay's device (may be a different ESP32)
+			const targetWs = deviceSockets.get(relay.deviceId);
+			if (targetWs && targetWs.readyState === WebSocket.OPEN) {
+				targetWs.send(JSON.stringify({ type: "relay_cmd", relayId: relay.id, pin: relay.pin, state: newState }));
+				console.log(`[WS] detector_trigger: relay_cmd → device ${relay.deviceId} relay ${relay.id} → ${newState}`);
+			}
+
+			// Broadcast to browser
+			if (deviceUserId) {
+				broadcastToUser(deviceUserId, { type: "relay_update", deviceId: relay.deviceId, relayId: relay.id, state: newState });
+			}
+			return;
+		}
 		if (msg.type === "relay_ack" && authenticatedDeviceId) {
 			// Confirm the actual GPIO state the ESP32 applied
 			await db.relay.updateMany({
